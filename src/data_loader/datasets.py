@@ -1,8 +1,10 @@
 """Data loader
 """
 import argparse
+import copy
 import logging
 import os
+import random
 from typing import List
 
 import h5py
@@ -13,6 +15,8 @@ import torchvision
 
 import data_loader.transforms as Transforms
 import common.math.se3 as se3
+
+import pyvista as pv
 
 _logger = logging.getLogger()
 
@@ -38,6 +42,11 @@ def get_train_datasets(args: argparse.Namespace):
                                  transform=train_transforms)
         val_data = ModelNetHdf(args.dataset_path, subset='test', categories=val_categories,
                                transform=val_transforms)
+    elif args.dataset_type == 'holonav':
+        train_data = HoloNavInput(args.dataset_path, subset='train', categories=train_categories,
+                                  transform=train_transforms)
+        val_data = HoloNavInput(args.dataset_path, subset='test', categories=val_categories,
+                                transform=val_transforms)
     else:
         raise NotImplementedError
 
@@ -58,6 +67,9 @@ def get_test_datasets(args: argparse.Namespace):
     if args.dataset_type == 'modelnet_hdf':
         test_data = ModelNetHdf(args.dataset_path, subset='test', categories=test_categories,
                                 transform=test_transforms)
+    elif args.dataset_type == 'holonav':
+        test_data = HoloNavInput(args.dataset_path, subset='test', categories=test_categories,
+                                 transform=test_transforms)
     else:
         raise NotImplementedError
 
@@ -99,6 +111,16 @@ def get_transforms(noise_type: str,
                            Transforms.FixedResampler(num_points),
                            Transforms.SplitSourceRef(),
                            Transforms.RandomTransformSE3_euler(rot_mag=rot_mag, trans_mag=trans_mag),
+                           Transforms.ShufflePoints()]
+
+    elif noise_type == "match":
+        # Match different models together
+        train_transforms = [Transforms.RandomTransformSE3_euler(rot_mag=rot_mag, trans_mag=trans_mag),
+                            Transforms.ShufflePoints()]
+
+        test_transforms = [Transforms.SetDeterministic(),
+                           Transforms.RandomTransformSE3_euler(rot_mag=0, trans_mag=0),
+                           Transforms.RandomJitter(),
                            Transforms.ShufflePoints()]
 
     elif noise_type == "jitter":
@@ -196,6 +218,177 @@ class ModelNetHdf(Dataset):
     @property
     def classes(self):
         return self._classes
+
+    @staticmethod
+    def _read_h5_files(fnames, categories):
+
+        all_data = []
+        all_labels = []
+
+        for fname in fnames:
+            f = h5py.File(fname, mode='r')
+            data = np.concatenate([f['data'][:], f['normal'][:]], axis=-1)
+            labels = f['label'][:].flatten().astype(np.int64)
+
+            if categories is not None:  # Filter out unwanted categories
+                mask = np.isin(labels, categories).flatten()
+                data = data[mask, ...]
+                labels = labels[mask, ...]
+
+            all_data.append(data)
+            all_labels.append(labels)
+
+        all_data = np.concatenate(all_data, axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
+        return all_data, all_labels
+
+    @staticmethod
+    def _download_dataset(dataset_path: str):
+        os.makedirs(dataset_path, exist_ok=True)
+
+        www = 'https://rpmnet.s3.us-east-2.amazonaws.com/modelnet40_ply_hdf5_2048.zip'
+        zipfile = os.path.basename(www)
+        os.system('wget {}'.format(www))
+        os.system('unzip {} -d .'.format(zipfile))
+        os.system('mv {} {}'.format(zipfile[:-4], os.path.dirname(dataset_path)))
+        os.system('rm {}'.format(zipfile))
+
+    def to_category(self, i):
+        return self._idx2category[i]
+
+
+class HoloNavInput(Dataset):
+    def __init__(self, dataset_path: str, subset: str = 'train', categories: List = None, transform=None):
+        """ModelNet40 dataset from PointNet.
+        Automatically downloads the dataset if not available
+
+        Args:
+            dataset_path (str): Folder containing processed dataset
+            subset (str): Dataset subset, either 'train' or 'test'
+            categories (list): Categories to use
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self._logger = logging.getLogger(self.__class__.__name__)
+        self._root = dataset_path
+
+        categories_idx = None
+        self._logger.info('Using all categories.')
+
+        if subset == 'train':
+            sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
+            sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
+            targetPC_points = [pv.PolyData(
+                np.loadtxt((dataset_path + '/target_point_clouds/Optical/points1/sk1/reg_pc{}.txt'.format(val)))
+            ).delaunay_2d()
+                for val in range(1, 6)]
+
+        elif subset == 'test':
+            sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
+            sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
+            targetPC_points = [pv.PolyData(
+                np.loadtxt((dataset_path + '/target_point_clouds/Optical/points1/sk1/reg_pc{}.txt'.format(val)))
+            ).delaunay_2d()
+                for val in range(1, 6)]
+
+        self._labels = [0] * 5
+        self._classes = ["custom skulls"] * 5
+
+        self._data_src = self._prepare_src(sourcePC_mesh)
+        self._data_ref = self._prepare_ref(targetPC_points)
+        # self._data_ref = copy.deepcopy(self._data_src)
+
+        self._transform = transform
+
+        # self._data_src, self._labels = self._read_h5_files(h5_filelist, categories_idx)
+        # self._data, self._labels = self._data[:32], self._labels[:32, ...]
+        # self._transform = transform
+        # self._logger.info('Loaded {} {} instances.'.format(self._data_src.shape[0], subset))
+
+    def __getitem__(self, item):
+        sample = {'points_src': self._data_src[item, :, :], 'points_ref': self._data_ref[item, :, :],
+                  'points_raw': self._data_src[item, :, :],
+                  'label': self._labels[item], 'idx': np.array(item, dtype=np.int32)}
+
+        if self._transform:
+            sample = self._transform(sample)
+
+        return sample
+
+    def __len__(self):
+        return self._data_src.shape[0]
+
+    @property
+    def classes(self):
+        return self._classes
+
+    # @staticmethod
+    # def _prepare_src(src_model):
+    #     pc_points = np.asarray(src_model.points, dtype=np.float32)
+    #     pc_normals = np.asarray(src_model.point_normals, dtype=np.float32)
+    #
+    #     while len(pc_points) > 1024:
+    #         r_index = random.randint(0, len(pc_points) - 1)
+    #         pc_points = np.delete(pc_points, r_index, 0)
+    #         pc_normals = np.delete(pc_normals, r_index, 0)
+    #
+    #     data = np.concatenate([pc_points[:], pc_normals[:]], axis=-1)
+    #
+    #     return np.array([data], dtype=np.float32)
+
+    @staticmethod
+    def _prepare_src(src_model):
+        data = []
+        for model in src_model:
+            pc_points = np.asarray(model.points, dtype=np.float32)
+            pc_normals = np.asarray(model.point_normals, dtype=np.float32)
+
+            while len(pc_points) > 1024:
+                r_index = random.randint(0, len(pc_points) - 1)
+                pc_points = np.delete(pc_points, r_index, 0)
+                pc_normals = np.delete(pc_normals, r_index, 0)
+
+            data.append(np.concatenate([pc_points[:], pc_normals[:]], axis=-1))
+
+        return np.array(data, dtype=np.float32)
+
+    @staticmethod
+    def _prepare_ref(target_pc):
+        data = []
+        for model in target_pc:
+            pc_points = np.asarray(model.points, dtype=np.float32)
+            pc_normals = np.asarray(model.point_normals, dtype=np.float32)
+
+            while len(pc_points) < 1024:
+                pc_points = np.concatenate([pc_points, pc_points])
+                pc_normals = np.concatenate([pc_normals, pc_normals])
+
+            while len(pc_points) > 1024:
+                r_index = random.randint(0, len(pc_points) - 1)
+                pc_points = np.delete(pc_points, r_index, 0)
+                pc_normals = np.delete(pc_normals, r_index, 0)
+
+            data.append(np.concatenate([pc_points[:], pc_normals[:]], axis=-1))
+
+        return np.array(data, dtype=np.float32)
+
+        # pc_points = np.asarray(target_pc.points, dtype=np.float32)
+        # pc_normals = np.asarray(target_pc.point_normals, dtype=np.float32)
+        #
+        # while len(pc_points) > 1024:
+        #     r_index = random.randint(0, len(pc_points) - 1)
+        #     pc_points = np.delete(pc_points, r_index, 0)
+        #     pc_normals = np.delete(pc_normals, r_index, 0)
+        #
+        # data = np.concatenate([pc_points[:], pc_normals[:]], axis=-1)
+        #
+        # return np.array([data], dtype=np.float32)
+
+    @staticmethod
+    def _read_ply_files():
+
+        all_data = []
+        all_labels = []
 
     @staticmethod
     def _read_h5_files(fnames, categories):

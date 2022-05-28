@@ -18,11 +18,11 @@ def rpmnet_arguments():
                         type=str, metavar='PATH',
                         help='path to the processed dataset. Default: ../datasets/modelnet40_ply_hdf5_2048')
     parser.add_argument('--dataset_type', default='modelnet_hdf',
-                        choices=['modelnet_hdf', 'bunny', 'armadillo', 'buddha', 'dragon'],
+                        choices=['modelnet_hdf', 'holonav', 'bunny', 'armadillo', 'buddha', 'dragon'],
                         metavar='DATASET', help='dataset type (default: modelnet_hdf)')
     parser.add_argument('--num_points', default=1024, type=int,
                         metavar='N', help='points in point-cloud (default: 1024)')
-    parser.add_argument('--noise_type', default='crop', choices=['clean', 'jitter', 'crop'],
+    parser.add_argument('--noise_type', default='crop', choices=['clean', 'jitter', 'crop', 'match'],
                         help='Types of perturbation to consider')
     parser.add_argument('--rot_mag', default=45.0, type=float,
                         metavar='T', help='Maximum magnitude of rotation perturbation (in degrees)')

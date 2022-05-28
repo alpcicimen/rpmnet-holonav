@@ -179,3 +179,6 @@ dmypy.json
 # Log files
 log.txt
 dump/
+/eval_results*
+/datasets
+/logs/*

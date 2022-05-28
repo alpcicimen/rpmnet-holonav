@@ -30,6 +30,9 @@ from common.math.so3 import dcm2euler
 from data_loader.datasets import get_test_datasets
 import models.rpmnet
 
+import common.math.se3 as mse3
+
+import pyvista as pv
 
 def compute_metrics(data: Dict, pred_transforms) -> Dict:
     """Compute metrics required in the paper
@@ -280,6 +283,68 @@ def get_model():
     return model
 
 
+def visualize(pred_transforms, test_loader, index=0):
+
+    data = [data for data in tqdm(test_loader, leave=False)]
+
+    ref_points = np.array((data[0]['points_ref'])[index, :, :3])
+    ref_normals = np.array((data[0]['points_ref'])[index, :, 3:])
+    source_points = (data[0]['points_src'])[..., :3]
+    source_normals = np.array((data[0]['points_src'])[index, :, 3:])
+
+    c_transforms = torch.from_numpy(pred_transforms).to('cpu')
+    c_transform = c_transforms[index:(index+1), 4, :, :]
+
+    src_transformed = np.array(se3.transform(c_transform, source_points))
+
+    source_points = np.array(source_points)[index]
+
+    pc = pv.PolyData(np.concatenate((source_points, ref_points)))
+    pc['Normals'] = np.concatenate((source_normals, ref_normals))
+
+    colors = np.concatenate((np.full(shape=len(ref_points), fill_value=1.0),
+                             np.full(shape=len(source_points), fill_value=0.0)))
+
+    pc['point_color'] = colors
+
+    pc.plot(scalars='point_color')
+
+    pc = pv.PolyData(np.concatenate((src_transformed[index], ref_points)))
+    pc['Normals'] = np.concatenate((source_normals, ref_normals))
+
+    # colors = np.concatenate((np.full(shape=len(raw_points), fill_value=1.0),
+    #                          np.full(shape=len(source_points), fill_value=0.0)))
+
+    pc['point_color'] = colors
+
+    pc.plot(scalars='point_color')
+
+def save_model(pred_transforms, test_loader, index=0, iter_num=0):
+
+    c_transform = pred_transforms[index:(index + 1), iter_num, :, :]
+
+    sourcePC_path = _args.dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
+    sourcePC_mesh = pv.read(sourcePC_path)
+
+    src_transformed = np.array(mse3.transform(c_transform[0], np.asarray(sourcePC_mesh.points)))
+
+    pc = pv.PolyData(np.concatenate((np.asarray(sourcePC_mesh.points), src_transformed)))
+    pc['Normals'] = np.concatenate((np.asarray(sourcePC_mesh.point_normals), np.asarray(sourcePC_mesh.point_normals)))
+
+    colors = np.concatenate((np.full(shape=len(np.asarray(sourcePC_mesh.points)), fill_value=1.0),
+                             np.full(shape=len(src_transformed), fill_value=0.0)))
+
+    pc['point_color'] = colors
+
+    pv.plot(pc, scalars='point_color', cmap='jet', show_bounds=True, cpos='yz')
+
+    sourcePC_mesh.points = src_transformed
+
+    new_path = _args.dataset_path + '/source_point_clouds_preop_models/new/sk1_face_d10000f_iter_{}.ply'.format(iter_num)
+
+    sourcePC_mesh.save(new_path)
+
+
 def main():
     # Load data_loader
     test_dataset = get_test_datasets(_args)
@@ -294,8 +359,15 @@ def main():
         model = get_model()
         pred_transforms, endpoints = inference(test_loader, model)  # Feedforward transforms
 
+    # for index in range(0,4):
+    visualize(pred_transforms, test_loader, index=0)
+
     # Compute evaluation matrices
+    # if _args.dataset_type != 'holonav':
     eval_metrics, summary_metrics = evaluate(pred_transforms, data_loader=test_loader)
+
+    for i in range (0,4):
+        save_model(pred_transforms, test_loader, index=0, iter_num=i)
 
     save_eval_data(pred_transforms, endpoints, eval_metrics, summary_metrics, _args.eval_save_path)
     _logger.info('Finished')
