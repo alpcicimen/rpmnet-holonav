@@ -116,11 +116,14 @@ def get_transforms(noise_type: str,
     elif noise_type == "match":
         # Match different models together
         train_transforms = [Transforms.RandomTransformSE3_euler(rot_mag=rot_mag, trans_mag=trans_mag),
+                            # Transforms.Resampler(451),
+                            Transforms.Resampler(num_points),
                             Transforms.ShufflePoints()]
 
         test_transforms = [Transforms.SetDeterministic(),
-                           Transforms.RandomTransformSE3_euler(rot_mag=0, trans_mag=0),
-                           Transforms.RandomJitter(),
+                           # Transforms.Resampler(451),
+                           Transforms.RandomTransformSE3_euler(rot_mag=rot_mag, trans_mag=trans_mag),
+                           # Transforms.RandomJitter(),
                            Transforms.ShufflePoints()]
 
     elif noise_type == "jitter":
@@ -276,27 +279,86 @@ class HoloNavInput(Dataset):
         self._logger.info('Using all categories.')
 
         if subset == 'train':
-            sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
+            sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face.ply'
             sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
             targetPC_points = [pv.PolyData(
                 np.loadtxt((dataset_path + '/target_point_clouds/Optical/points1/sk1/reg_pc{}.txt'.format(val)))
             ).delaunay_2d()
                 for val in range(1, 6)]
+            self._labels = [0] * 5
+            self._classes = ["custom skull 1"] * 5
+            # sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
+            # sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
+            # targetPC_points = np.full(5, pv.read(sourcePC_path))
+            # self._labels = [0] * 5
+            # self._classes = ["custom skull"] * 5
 
         elif subset == 'test':
-            sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
-            sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
-            targetPC_points = [pv.PolyData(
-                np.loadtxt((dataset_path + '/target_point_clouds/Optical/points1/sk1/reg_pc{}.txt'.format(val)))
-            ).delaunay_2d()
-                for val in range(1, 6)]
+            # sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
+            # sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
 
-        self._labels = [0] * 5
-        self._classes = ["custom skulls"] * 5
+            # targetPC_points = [pv.PolyData(
+            #     np.loadtxt((dataset_path + '/target_point_clouds/Optical/points1/sk1/reg_pc{}.txt'.format(val)))
+            # ).delaunay_2d()
+            #     for val in range(1, 6)]
+            # self._labels = [0] * 5
+            # self._classes = ["custom skull"] * 5
+            # sourcePC_path = dataset_path + '/source_point_clouds_preop_models/sk2_face_d10000f.ply'
+            # sourcePC_mesh = np.full(5, pv.read(sourcePC_path))
+            # targetPC_points = np.full(5, pv.read(sourcePC_path))
+            # self._labels = [0] * 5
+            # self._classes = ["custom skull"] * 5
+
+            # targetPC_path = dataset_path + '/target_point_clouds/depthSensor/p1_example_cleaned.ply'
+            # targetPC_points = np.full(5, pv.PolyData(pv.read(targetPC_path)).delaunay_2d())
+
+            # # START
+            #
+            sourcePC_mesh = np.array([], dtype=pv.DataSet)
+            targetPC_points = []
+
+            self._labels = []
+            self._classes = []
+
+            for i in range(1, 4):
+
+                # sk_path = dataset_path + '/source_point_clouds_preop_models/sk{}_face.ply'.format(i)
+                # reg_path = dataset_path + '/target_point_clouds/Optical/points1/sk{}'.format(i)
+                #
+                # reg_points = [pv.PolyData(np.loadtxt(os.path.join(reg_path, fname))).delaunay_2d()
+                #               for fname in os.listdir(reg_path)
+                #               if 'reg_pc' in fname]
+                #
+                # targetPC_points = targetPC_points + reg_points
+                #
+                # sourcePC_mesh = np.append(sourcePC_mesh, np.full(len(reg_points), pv.read(sk_path)))
+                #
+                # self._labels = self._labels + [i-1] * len(reg_points)
+                # self._classes = self._classes + ["custom skull {}".format(i)] * len(reg_points)
+
+                sk_path = dataset_path + '/source_point_clouds_preop_models/sk{}_face.ply'.format(i)
+                reg_path = dataset_path + '/source_point_clouds_preop_models/sk{}_face_occ.ply'.format(i)
+
+                sourcePC_mesh = np.append(sourcePC_mesh, pv.read(sk_path))
+                targetPC_points = targetPC_points + [pv.read(reg_path)]
+
+                self._labels = self._labels + [i-1]
+                self._classes = self._classes + ["custom skull {}".format(i)]
+
+            # END
+
+            # self._labels = [0] * 5
+            # self._classes = ["custom skull"] * 5
 
         self._data_src = self._prepare_src(sourcePC_mesh)
         self._data_ref = self._prepare_ref(targetPC_points)
-        # self._data_ref = copy.deepcopy(self._data_src)
+        # self._data_ref = self._prepare_src(sourcePC_mesh)
+
+        # p_dists = np.array([self.square_distance(self._data_ref[i], self._data_src[i]) for i in range(len(self._data_ref))])
+        #
+        # self._src_matches = [self._data_src[index,np.array(
+        #     [np.where(np.min(p_dists[index], axis=-1)[i] == p_dists[index][i])[0][0] for i in range(len(self._data_ref[index]))]
+        # ).flatten()] for index in range(len(self._data_src))]
 
         self._transform = transform
 
@@ -306,17 +368,73 @@ class HoloNavInput(Dataset):
         # self._logger.info('Loaded {} {} instances.'.format(self._data_src.shape[0], subset))
 
     def __getitem__(self, item):
-        sample = {'points_src': self._data_src[item, :, :], 'points_ref': self._data_ref[item, :, :],
-                  'points_raw': self._data_src[item, :, :],
-                  'label': self._labels[item], 'idx': np.array(item, dtype=np.int32)}
+        sample = {'points_src': self._data_src[item][:, :], 'points_ref': self._data_ref[item][:, :],
+                  'points_raw': self._data_src[item][:, :],
+                  'points_raw_ref': self._data_ref[item][:, :],
+                  # 'points_closest_match': self._src_matches[item][:, :],
+                  'label': self._labels[item], 'idx': np.array([0], dtype=np.int32)}
+
+        # src_pcd = sample['points_src'][:, :3]
+        # src_pcd_n = sample['points_src'][:, 3:]
+        # tgt_pcd = sample['points_ref'][:, :3]
+        # tgt_pcd_n = sample['points_ref'][:, 3:]
+        #
+        # pcd0 = o3d.geometry.PointCloud()
+        # pcd1 = o3d.geometry.PointCloud()
+        #
+        # # voxelize the point clouds here
+        # pcd0.points = o3d.utility.Vector3dVector(src_pcd)
+        # pcd0.normals = o3d.utility.Vector3dVector(src_pcd_n)
+        # pcd1.points = o3d.utility.Vector3dVector(tgt_pcd)
+        # pcd1.normals = o3d.utility.Vector3dVector(tgt_pcd_n)
+        # pcd0 = pcd0.voxel_down_sample(10.0) # + item * 0.5)
+        # pcd1 = pcd1.voxel_down_sample(10.0) # + item * 0.5)
+        #
+        # src_pcd = np.concatenate((np.asarray(pcd0.points, dtype=np.float32), np.asarray(pcd0.normals, dtype=np.float32))
+        #                          , axis=-1)
+        # tgt_pcd = np.concatenate((np.asarray(pcd1.points, dtype=np.float32), np.asarray(pcd1.normals, dtype=np.float32))
+        #                          , axis=-1)
+        #
+        # sample['points_src'] = src_pcd
+        # sample['points_ref'] = tgt_pcd
+        #
+        # sample['points_raw'] = src_pcd
+        # sample['points_raw_ref'] = tgt_pcd
 
         if self._transform:
             sample = self._transform(sample)
+        #
+        # src_pcd = sample['points_src'][:, :3]
+        # src_pcd_n = sample['points_src'][:, 3:]
+        # tgt_pcd = sample['points_ref'][:, :3]
+        # tgt_pcd_n = sample['points_ref'][:, 3:]
+        #
+        # pcd0 = o3d.geometry.PointCloud()
+        # pcd1 = o3d.geometry.PointCloud()
+        #
+        # # voxelize the point clouds here
+        # pcd0.points = o3d.utility.Vector3dVector(src_pcd)
+        # pcd0.normals = o3d.utility.Vector3dVector(src_pcd_n)
+        # pcd1.points = o3d.utility.Vector3dVector(tgt_pcd)
+        # pcd1.normals = o3d.utility.Vector3dVector(tgt_pcd_n)
+        # pcd0 = pcd0.voxel_down_sample(1.0)  # + item * 0.5)
+        # pcd1 = pcd1.voxel_down_sample(1.0)  # + item * 0.5)
+        #
+        # src_pcd = np.concatenate((np.asarray(pcd0.points, dtype=np.float32), np.asarray(pcd0.normals, dtype=np.float32))
+        #                          , axis=-1)
+        # tgt_pcd = np.concatenate((np.asarray(pcd1.points, dtype=np.float32), np.asarray(pcd1.normals, dtype=np.float32))
+        #                          , axis=-1)
+        #
+        # sample['points_src'] = src_pcd
+        # sample['points_ref'] = tgt_pcd
+        #
+        # sample['points_raw'] = src_pcd
+        # sample['points_raw_ref'] = tgt_pcd
 
         return sample
 
     def __len__(self):
-        return self._data_src.shape[0]
+        return len(self._data_src)
 
     @property
     def classes(self):
@@ -337,20 +455,46 @@ class HoloNavInput(Dataset):
     #     return np.array([data], dtype=np.float32)
 
     @staticmethod
+    def square_distance(src, dst):
+        return np.sum((src[:, None, :] - dst[None, :, :]) ** 2, axis=-1)
+
+    @staticmethod
     def _prepare_src(src_model):
         data = []
         for model in src_model:
             pc_points = np.asarray(model.points, dtype=np.float32)
             pc_normals = np.asarray(model.point_normals, dtype=np.float32)
 
-            while len(pc_points) > 1024:
-                r_index = random.randint(0, len(pc_points) - 1)
-                pc_points = np.delete(pc_points, r_index, 0)
-                pc_normals = np.delete(pc_normals, r_index, 0)
+            # while len(pc_points) > 1024:
+            #     r_index = random.randint(0, len(pc_points) - 1)
+            #     pc_points = np.delete(pc_points, r_index, 0)
+            #     pc_normals = np.delete(pc_normals, r_index, 0)
 
-            data.append(np.concatenate([pc_points[:], pc_normals[:]], axis=-1))
+            pcd0 = o3d.geometry.PointCloud()
 
-        return np.array(data, dtype=np.float32)
+            # voxelize the point clouds here
+            pcd0.points = o3d.utility.Vector3dVector(pc_points)
+            pcd0.normals = o3d.utility.Vector3dVector(pc_normals)
+            pcd0 = pcd0.voxel_down_sample(10.0)  # + item * 0.5)
+
+            pc_points = np.asarray(pcd0.points)
+            pc_normals = np.asarray(pcd0.normals)
+
+            # orig_len = len(pc_points)
+            #
+            # while len(pc_points) < 451:
+            #     pc_points = np.concatenate([pc_points, pc_points])
+            #     pc_normals = np.concatenate([pc_normals, pc_normals])
+            #
+            # while len(pc_points) > 451:
+            #     r_index = random.randint(orig_len, len(pc_points) - 1)
+            #     pc_points = np.delete(pc_points, r_index, 0)
+            #     pc_normals = np.delete(pc_normals, r_index, 0)
+
+            data.append(np.concatenate([pc_points[:], pc_normals[:]], axis=-1, dtype=np.float32))
+
+        return data
+        # return np.array(data, dtype=np.float32)
 
     @staticmethod
     def _prepare_ref(target_pc):
@@ -359,18 +503,39 @@ class HoloNavInput(Dataset):
             pc_points = np.asarray(model.points, dtype=np.float32)
             pc_normals = np.asarray(model.point_normals, dtype=np.float32)
 
-            while len(pc_points) < 1024:
-                pc_points = np.concatenate([pc_points, pc_points])
-                pc_normals = np.concatenate([pc_normals, pc_normals])
+            # while len(pc_points) < 64:
+            #     pc_points = np.concatenate([pc_points, pc_points])
+            #     pc_normals = np.concatenate([pc_normals, pc_normals])
 
-            while len(pc_points) > 1024:
-                r_index = random.randint(0, len(pc_points) - 1)
-                pc_points = np.delete(pc_points, r_index, 0)
-                pc_normals = np.delete(pc_normals, r_index, 0)
+            # while len(pc_points) > 1024:
+            #     r_index = random.randint(0, len(pc_points) - 1)
+            #     pc_points = np.delete(pc_points, r_index, 0)
+            #     pc_normals = np.delete(pc_normals, r_index, 0)
 
-            data.append(np.concatenate([pc_points[:], pc_normals[:]], axis=-1))
+            pcd1 = o3d.geometry.PointCloud()
 
-        return np.array(data, dtype=np.float32)
+            # voxelize the point clouds here
+            pcd1.points = o3d.utility.Vector3dVector(pc_points)
+            pcd1.normals = o3d.utility.Vector3dVector(pc_normals)
+            pcd1 = pcd1.voxel_down_sample(10.0)  # + item * 0.5)
+
+            pc_points = np.asarray(pcd1.points)
+            pc_normals = np.asarray(pcd1.normals)
+
+            # orig_len = len(pc_points)
+            #
+            # while len(pc_points) < 143:
+            #     pc_points = np.concatenate([pc_points, pc_points])
+            #     pc_normals = np.concatenate([pc_normals, pc_normals])
+            #
+            # while len(pc_points) > 143:
+            #     r_index = random.randint(orig_len, len(pc_points) - 1)
+            #     pc_points = np.delete(pc_points, r_index, 0)
+            #     pc_normals = np.delete(pc_normals, r_index, 0)
+
+            data.append(np.concatenate([pc_points[:], pc_normals[:]], axis=-1, dtype=np.float32))
+
+        return data
 
         # pc_points = np.asarray(target_pc.points, dtype=np.float32)
         # pc_normals = np.asarray(target_pc.point_normals, dtype=np.float32)
@@ -412,17 +577,6 @@ class HoloNavInput(Dataset):
         all_data = np.concatenate(all_data, axis=0)
         all_labels = np.concatenate(all_labels, axis=0)
         return all_data, all_labels
-
-    @staticmethod
-    def _download_dataset(dataset_path: str):
-        os.makedirs(dataset_path, exist_ok=True)
-
-        www = 'https://rpmnet.s3.us-east-2.amazonaws.com/modelnet40_ply_hdf5_2048.zip'
-        zipfile = os.path.basename(www)
-        os.system('wget {}'.format(www))
-        os.system('unzip {} -d .'.format(zipfile))
-        os.system('mv {} {}'.format(zipfile[:-4], os.path.dirname(dataset_path)))
-        os.system('rm {}'.format(zipfile))
 
     def to_category(self, i):
         return self._idx2category[i]

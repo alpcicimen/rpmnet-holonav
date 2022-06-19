@@ -34,6 +34,7 @@ import common.math.se3 as mse3
 
 import pyvista as pv
 
+
 def compute_metrics(data: Dict, pred_transforms) -> Dict:
     """Compute metrics required in the paper
     """
@@ -67,12 +68,26 @@ def compute_metrics(data: Dict, pred_transforms) -> Dict:
         residual_transmag = concatenated[:, :, 3].norm(dim=-1)
 
         # Modified Chamfer distance
+        # src_transformed = se3.transform(pred_transforms, points_src)
+        # ref_clean = points_raw
+        # src_clean = se3.transform(se3.concatenate(pred_transforms, se3.inverse(gt_transforms)), points_raw)
+        # dist_src = torch.min(square_distance(src_transformed, ref_clean), dim=-1)[0]
+        # dist_ref = torch.min(square_distance(points_ref, src_clean), dim=-1)[0]
+        # chamfer_dist = torch.mean(dist_src, dim=1) + torch.mean(dist_ref, dim=1)
+
+        # ref_clean = data['points_raw_ref'][..., :3]
+        # points_closest = data['points_closest_match'][..., :3]
+        # src_transformed = se3.transform(pred_transforms, se3.transform(se3.inverse(gt_transforms), points_closest))
+
+        # ref_clean = data['points_raw_ref'][..., :3]
+        # points_closest = data['points_closest_match'][..., :3]
+        # src_transformed = se3.transform(pred_transforms, se3.transform(se3.inverse(gt_transforms), points_raw))
+
         src_transformed = se3.transform(pred_transforms, points_src)
-        ref_clean = points_raw
-        src_clean = se3.transform(se3.concatenate(pred_transforms, se3.inverse(gt_transforms)), points_raw)
-        dist_src = torch.min(square_distance(src_transformed, ref_clean), dim=-1)[0]
-        dist_ref = torch.min(square_distance(points_ref, src_clean), dim=-1)[0]
-        chamfer_dist = torch.mean(dist_src, dim=1) + torch.mean(dist_ref, dim=1)
+
+        dist_ref = torch.min(square_distance(points_ref, src_transformed), dim=-1)[0]
+
+        chamfer_dist = torch.mean(dist_ref, dim=1)
 
         metrics = {
             'r_mse': r_mse,
@@ -95,7 +110,7 @@ def summarize_metrics(metrics):
             summarized[k[:-3] + 'rmse'] = np.sqrt(np.mean(metrics[k]))
         elif k.startswith('err'):
             summarized[k + '_mean'] = np.mean(metrics[k])
-            summarized[k + '_rmse'] = np.sqrt(np.mean(metrics[k]**2))
+            summarized[k + '_rmse'] = np.sqrt(np.mean(metrics[k] ** 2))
         else:
             summarized[k] = np.mean(metrics[k])
 
@@ -259,7 +274,7 @@ def save_eval_data(pred_transforms, endpoints, metrics, summary_metrics, save_pa
         metrics[i_iter].pop('r_mse')
         metrics[i_iter].pop('t_mse')
         metrics_df = pd.DataFrame.from_dict(metrics[i_iter])
-        metrics_df.to_excel(writer, sheet_name='Iter_{}'.format(i_iter+1))
+        metrics_df.to_excel(writer, sheet_name='Iter_{}'.format(i_iter + 1))
     writer.close()
 
     # Save summary metrics
@@ -283,44 +298,75 @@ def get_model():
     return model
 
 
-def visualize(pred_transforms, test_loader, index=0):
+def square_distance(src, dst):
+    return np.sum((src[:, None, :] - dst[None, :, :]) ** 2, axis=-1)
 
+
+def visualize(pred_transforms, test_loader, index=0, iteration=0):
     data = [data for data in tqdm(test_loader, leave=False)]
 
-    ref_points = np.array((data[0]['points_ref'])[index, :, :3])
-    ref_normals = np.array((data[0]['points_ref'])[index, :, 3:])
-    source_points = (data[0]['points_src'])[..., :3]
-    source_normals = np.array((data[0]['points_src'])[index, :, 3:])
+    label = np.array(data[index]['label'])[0] + 1
+    # label = 1
 
-    c_transforms = torch.from_numpy(pred_transforms).to('cpu')
-    c_transform = c_transforms[index:(index+1), 4, :, :]
+    ref_points = np.array((data[index]['points_raw_ref'])[0, :, :3])
+    ref_normals = np.array((data[index]['points_raw_ref'])[0, :, 3:])
+    source_points = (data[index]['points_raw'])[0, :, :3].cpu().numpy()
+    # source_normals = np.array((data[index]['points_src'])[0, :, 3:])
 
-    src_transformed = np.array(se3.transform(c_transform, source_points))
+    src_transformed = np.array(
+        mse3.transform(mse3.inverse(np.array(data[index]['transform_gt'])[0]), source_points))
 
-    source_points = np.array(source_points)[index]
+    # sourcePC_path = _args.dataset_path + '/source_point_clouds_preop_models/sk{}_face_d10000f.ply'.format(label)
+    # sourcePC_mesh = pv.read(sourcePC_path)
 
-    pc = pv.PolyData(np.concatenate((source_points, ref_points)))
-    pc['Normals'] = np.concatenate((source_normals, ref_normals))
+    # c_transforms = torch.from_numpy(pred_transforms).to('cpu')
+    # c_transform = c_transforms[index:(index+1), iteration, :, :]
 
-    colors = np.concatenate((np.full(shape=len(ref_points), fill_value=1.0),
-                             np.full(shape=len(source_points), fill_value=0.0)))
+    c_transform = pred_transforms[index:(index + 1), iteration, :, :]
 
-    pc['point_color'] = colors
+    # src_transformed = np.array(
+    #     mse3.transform(mse3.inverse(np.array(data[index]['transform_gt'])[0]), np.asarray(sourcePC_mesh.points)))
 
-    pc.plot(scalars='point_color')
+    src_transformed = np.array(mse3.transform(c_transform[0], src_transformed))
+    # sourcePC_mesh.points = src_transformed
 
-    pc = pv.PolyData(np.concatenate((src_transformed[index], ref_points)))
-    pc['Normals'] = np.concatenate((source_normals, ref_normals))
+    # START
 
-    # colors = np.concatenate((np.full(shape=len(raw_points), fill_value=1.0),
-    #                          np.full(shape=len(source_points), fill_value=0.0)))
+    # ref_clean = np.asarray(ref_points)
+    # src_clean = np.asarray(sourcePC_mesh.points)
+    #
+    # dist_src = np.min(square_distance(src_clean, ref_clean), axis=-1)
+    # dist_ref = np.min(square_distance(ref_clean, src_clean), axis=-1)
+    # chamfer_dist = np.mean(dist_src, axis=0) + np.mean(dist_ref, axis=0)
 
-    pc['point_color'] = colors
+    # chamfer_dist = np.mean(dist_ref)
+    #
+    # print("One - way chamfer dist is: {}".format(chamfer_dist))
+    #
+    # source_points = np.array((data[index]['points_src'])[..., :3])
+    # source_ideal = np.array(mse3.transform(np.array(data[index]['transform_gt'])[0],
+    #                                        source_points))
+    # source_predicted = np.array(mse3.transform(c_transform[0],
+    #                                        source_points))
+    #
+    # dist_self = np.min(square_distance(source_predicted[0], source_ideal[0]), axis=-1)
+    #
+    # f_error = np.mean(dist_self)
+    #
+    # print("Feature error is: {}".format(f_error))
 
-    pc.plot(scalars='point_color')
+    # END
 
-def save_model(pred_transforms, test_loader, index=0, iter_num=0):
+    p = pv.Plotter()
 
+    # p.add_mesh(sourcePC_mesh, smooth_shading=True, opacity=0.3)
+    p.add_points(src_transformed, smooth_shading=True, color='red')
+    p.add_points(ref_points, smooth_shading=True, color='blue')
+
+    p.show(title="Model: {}, Iteration: {}".format(index, iteration))
+
+
+def save_model(pred_transforms, index=0, iter_num=0):
     c_transform = pred_transforms[index:(index + 1), iter_num, :, :]
 
     sourcePC_path = _args.dataset_path + '/source_point_clouds_preop_models/sk1_face_d10000f.ply'
@@ -328,19 +374,20 @@ def save_model(pred_transforms, test_loader, index=0, iter_num=0):
 
     src_transformed = np.array(mse3.transform(c_transform[0], np.asarray(sourcePC_mesh.points)))
 
-    pc = pv.PolyData(np.concatenate((np.asarray(sourcePC_mesh.points), src_transformed)))
-    pc['Normals'] = np.concatenate((np.asarray(sourcePC_mesh.point_normals), np.asarray(sourcePC_mesh.point_normals)))
+    # pc = pv.PolyData(np.concatenate((np.asarray(sourcePC_mesh.points), src_transformed)))
+    # pc['Normals'] = np.concatenate((np.asarray(sourcePC_mesh.point_normals), np.asarray(sourcePC_mesh.point_normals)))
 
-    colors = np.concatenate((np.full(shape=len(np.asarray(sourcePC_mesh.points)), fill_value=1.0),
-                             np.full(shape=len(src_transformed), fill_value=0.0)))
+    # colors = np.concatenate((np.full(shape=len(np.asarray(sourcePC_mesh.points)), fill_value=1.0),
+    #                          np.full(shape=len(src_transformed), fill_value=0.0)))
 
-    pc['point_color'] = colors
-
-    pv.plot(pc, scalars='point_color', cmap='jet', show_bounds=True, cpos='yz')
+    # pc['point_color'] = colors
+    #
+    # pv.plot(pc, scalars='point_color', cmap='jet', show_bounds=True, cpos='yz')
 
     sourcePC_mesh.points = src_transformed
 
-    new_path = _args.dataset_path + '/source_point_clouds_preop_models/new/sk1_face_d10000f_iter_{}.ply'.format(iter_num)
+    new_path = _args.dataset_path + '/source_point_clouds_preop_models/new/model_{}-iter_{}.ply' \
+        .format(index + 1, iter_num)
 
     sourcePC_mesh.save(new_path)
 
@@ -359,17 +406,26 @@ def main():
         model = get_model()
         pred_transforms, endpoints = inference(test_loader, model)  # Feedforward transforms
 
-    # for index in range(0,4):
-    visualize(pred_transforms, test_loader, index=0)
 
     # Compute evaluation matrices
     # if _args.dataset_type != 'holonav':
     eval_metrics, summary_metrics = evaluate(pred_transforms, data_loader=test_loader)
 
-    for i in range (0,4):
-        save_model(pred_transforms, test_loader, index=0, iter_num=i)
+    gt_transforms = np.array([pc_data['transform_gt'].cpu().detach().numpy() for pc_data in test_loader])
+
+    np.save(os.path.join(_args.eval_save_path, 'gt_transforms.npy'), gt_transforms)
 
     save_eval_data(pred_transforms, endpoints, eval_metrics, summary_metrics, _args.eval_save_path)
+
+    c_dists = [np.mean(metric['chamfer_dist']) for metric in eval_metrics]
+
+    best_cds = [[metric['chamfer_dist'][i] for metric in eval_metrics] for i in range(0, 3)]
+
+    # best_iter = np.where(np.min(c_dists) == c_dists)[0][0]
+
+    for model in range(0, 3):
+        best_iter = np.where(np.min(best_cds[model], axis=-1) == best_cds[model])[0][0]
+        visualize(pred_transforms, test_loader, index=model, iteration=best_iter)
     _logger.info('Finished')
 
 
